@@ -249,6 +249,13 @@ private struct GeneralSection: View {
                     .toggleStyle(.switch)
                     .labelsHidden()
             }
+            SettingCard(icon: "arrow.up.left.and.arrow.down.right", tint: .blue,
+                        title: "Esconder em tela cheia",
+                        subtitle: "O notch some em vídeos e apps em tela cheia") {
+                Toggle("", isOn: $settings.hideInFullscreen)
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+            }
             SettingCard(icon: "sparkles", tint: .purple, title: "Notchy \(version)",
                         subtitle: "Seu notch, com superpoderes") {
                 Button("Sair do Notchy") { NSApp.terminate(nil) }

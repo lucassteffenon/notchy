@@ -1,10 +1,11 @@
 import AppKit
 import Combine
+import EventKit
 import SwiftUI
 
 /// O que aparece nas laterais do notch recolhido.
 enum CollapsedInfo {
-    case battery, timerFinished, timer, music, shelf, caffeine
+    case battery, meeting(EKEvent), timerFinished, timer, music, shelf, caffeine
 }
 
 struct ShelfItem: Identifiable, Equatable {
@@ -13,6 +14,9 @@ struct ShelfItem: Identifiable, Equatable {
 
     /// Nome como o Finder mostra (respeita extensão oculta e nomes localizados).
     var name: String { FileManager.default.displayName(atPath: url.path) }
+
+    /// Falso se o arquivo foi apagado ou levado para um lugar onde não dá para achar.
+    var exists: Bool { FileManager.default.fileExists(atPath: url.path) }
 }
 
 /// Estado compartilhado entre o painel (AppKit) e as views (SwiftUI).
@@ -20,7 +24,7 @@ final class NotchModel: ObservableObject {
     @Published var isExpanded = false
     @Published var tab: NotchTab = .home
     @Published var isDropTargeted = false
-    @Published var items: [ShelfItem] = []
+    @Published var items: [ShelfItem] = [] { didSet { saveShelf() } }
     @Published var isLocked = false
     @Published var secondsLeft = 0
     @Published var lockError: String?
@@ -49,15 +53,20 @@ final class NotchModel: ObservableObject {
     private let blocker = KeyboardBlocker()
     private var unlockTimer: Timer?
     private var cancellables: Set<AnyCancellable> = []
+    private let shelfKey = "shelfBookmarks"
 
     init() {
+        items = loadShelf()
         // Repassa mudanças dos módulos para quem observa o modelo (notch recolhido, abas)
         Publishers.MergeMany([
             nowPlaying.objectWillChange, battery.objectWillChange, timer.objectWillChange,
-            caffeine.objectWillChange, settings.objectWillChange,
+            caffeine.objectWillChange, settings.objectWillChange, calendar.objectWillChange,
         ])
         .sink { [weak self] _ in self?.objectWillChange.send() }
         .store(in: &cancellables)
+
+        // O aviso de reunião precisa da agenda carregada mesmo sem abrir a aba
+        if isEnabled(.calendar) { calendar.load() }
     }
 
     // MARK: Módulos e abas
@@ -77,7 +86,7 @@ final class NotchModel: ObservableObject {
 
     func setEnabled(_ module: NotchModule, _ on: Bool) {
         settings.setEnabled(module, on)
-        guard !on else { return }
+        guard !on else { return moduleTurnedOn(module) }
         // Desligar um módulo também encerra o que ele estiver fazendo
         switch module {
         case .timer: timer.reset()
@@ -87,13 +96,21 @@ final class NotchModel: ObservableObject {
         }
     }
 
+    private func moduleTurnedOn(_ module: NotchModule) {
+        switch module {
+        case .calendar: calendar.load()
+        default: break
+        }
+    }
+
     func showShelf() {
         if isEnabled(.shelf) { tab = .module(.shelf) }
     }
 
-    /// Prioridade: aviso do carregador, timer, música, prateleira, cafeína.
+    /// Prioridade: aviso do carregador, reunião, timer, música, prateleira, cafeína.
     var collapsedInfo: CollapsedInfo? {
         if isEnabled(.battery) && battery.showsAlert { return .battery }
+        if isEnabled(.calendar), let event = calendar.upcomingMeeting() { return .meeting(event) }
         if isEnabled(.timer) && timer.justFinished { return .timerFinished }
         if isEnabled(.timer) && timer.isActive { return .timer }
         if isEnabled(.music) && nowPlaying.isPlaying { return .music }
@@ -152,6 +169,21 @@ final class NotchModel: ObservableObject {
 
     func clearShelf() {
         items.removeAll()
+    }
+
+    /// Salva bookmarks (e não só caminhos): assim o arquivo é encontrado mesmo se for movido ou renomeado.
+    private func saveShelf() {
+        let bookmarks = items.compactMap { try? $0.url.bookmarkData() }
+        UserDefaults.standard.set(bookmarks, forKey: shelfKey)
+    }
+
+    private func loadShelf() -> [ShelfItem] {
+        let bookmarks = UserDefaults.standard.array(forKey: shelfKey) as? [Data] ?? []
+        return bookmarks.compactMap { data in
+            var stale = false
+            guard let url = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &stale) else { return nil }
+            return ShelfItem(url: url.standardizedFileURL)
+        }
     }
 
     func handleDrop(_ providers: [NSItemProvider]) -> Bool {

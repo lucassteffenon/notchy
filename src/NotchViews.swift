@@ -1,3 +1,4 @@
+import EventKit
 import SwiftUI
 
 /// Retângulo com as quinas de baixo arredondadas, colado no topo da tela.
@@ -97,6 +98,14 @@ private struct CollapsedView: View {
                     .foregroundStyle(model.battery.isPluggedIn ? .green : .white)
                 Spacer()
                 Text("\(model.battery.percent)%").monospacedDigit()
+            case .meeting(let event):
+                Image(systemName: event.meetingURL == nil ? "calendar" : "video.fill")
+                    .foregroundStyle(Color(nsColor: event.calendar.color))
+                    .symbolEffect(.pulse, isActive: true)
+                Spacer()
+                TimelineView(.periodic(from: .now, by: 15)) { context in
+                    Text(meetingCountdown(event, now: context.date)).monospacedDigit()
+                }
             case .timerFinished:
                 Image(systemName: "bell.fill")
                     .foregroundStyle(.orange)
@@ -128,6 +137,11 @@ private struct CollapsedView: View {
         .font(.system(size: 12, weight: .semibold))
         .foregroundStyle(.white.opacity(0.85))
         .padding(.horizontal, 12)
+    }
+
+    private func meetingCountdown(_ event: EKEvent, now: Date) -> String {
+        let seconds = event.startDate.timeIntervalSince(now)
+        return seconds <= 0 ? "Agora" : "\(Int(seconds / 60) + 1) min"
     }
 }
 
@@ -284,8 +298,11 @@ private struct ShelfView: View {
                     }
                     .padding(.top, 6)
                 }
-                Button("Limpar") { model.clearShelf() }
-                    .controlSize(.small)
+                VStack(spacing: 6) {
+                    AirDropButton(model: model)
+                    Button("Limpar") { model.clearShelf() }
+                        .controlSize(.small)
+                }
             }
         }
     }
@@ -300,7 +317,16 @@ private struct ShelfItemView: View {
             Image(nsImage: NSWorkspace.shared.icon(forFile: item.url.path))
                 .resizable()
                 .frame(width: 44, height: 44)
-            Text(item.name)
+                .opacity(item.exists ? 1 : 0.35)
+                .overlay(alignment: .bottomTrailing) {
+                    if !item.exists {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.yellow)
+                            .help("Arquivo não encontrado: foi apagado ou movido")
+                    }
+                }
+            Text(item.exists ? item.name : "Não encontrado")
                 .font(.caption2)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
@@ -324,8 +350,66 @@ private struct ShelfItemView: View {
             return provider
         }
         .contextMenu {
+            Button("Enviar por AirDrop") { AirDrop.send([item.url]) }
+                .disabled(!item.exists)
             Button("Mostrar no Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
             Button("Remover da prateleira", action: onRemove)
+        }
+    }
+}
+
+// MARK: AirDrop
+
+enum AirDrop {
+    /// Abre a janela do AirDrop do macOS com os arquivos.
+    static func send(_ urls: [URL]) {
+        let files = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !files.isEmpty, let service = NSSharingService(named: .sendViaAirDrop),
+              service.canPerform(withItems: files) else { return }
+        // O Notchy não tem janela ativa; ativa o app para a janela do AirDrop aparecer na frente
+        NSApp.activate(ignoringOtherApps: true)
+        service.perform(withItems: files)
+    }
+}
+
+/// Clique envia toda a prateleira; soltar um arquivo em cima envia só ele.
+private struct AirDropButton: View {
+    @ObservedObject var model: NotchModel
+    @State private var isTargeted = false
+
+    var body: some View {
+        Button { AirDrop.send(model.items.map(\.url)) } label: {
+            VStack(spacing: 3) {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.system(size: 20))
+                Text("AirDrop").font(.caption2.weight(.medium))
+            }
+            .frame(width: 62, height: 50)
+            .background(Color.blue.opacity(isTargeted ? 0.45 : 0.18), in: RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.blue.opacity(isTargeted ? 0.9 : 0.4))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Enviar a prateleira por AirDrop (ou solte um arquivo aqui)")
+        .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
+            // Junta todos os arquivos soltos para abrir uma única janela do AirDrop
+            let group = DispatchGroup()
+            var urls: [URL] = []
+            for provider in providers where provider.canLoadObject(ofClass: URL.self) {
+                group.enter()
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    DispatchQueue.main.async {
+                        if let url, url.isFileURL { urls.append(url) }
+                        group.leave()
+                    }
+                }
+            }
+            group.notify(queue: .main) { AirDrop.send(urls) }
+            return !providers.isEmpty
         }
     }
 }

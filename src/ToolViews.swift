@@ -3,17 +3,35 @@ import SwiftUI
 
 // MARK: - Bateria
 
+/// Porcentagem da bateria; ao passar o mouse, mostra o tempo restante.
 struct BatteryIndicator: View {
     @ObservedObject var battery: BatteryMonitor
+    @State private var isHovering = false
+
+    /// Cabe no mesmo espaço da porcentagem, para não empurrar os ícones para baixo do notch.
+    private var label: String {
+        guard isHovering, battery.isCharging || !battery.isPluggedIn else { return "\(battery.percent)%" }
+        return battery.remainingText ?? "…"
+    }
 
     var body: some View {
         if battery.hasBattery {
             HStack(spacing: 4) {
-                Text("\(battery.percent)%").monospacedDigit()
+                Text(label)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize()
+                    .contentTransition(.numericText())
                 Image(systemName: battery.symbol)
                     .foregroundStyle(battery.isPluggedIn ? .green : battery.percent <= 20 ? .red : .white)
             }
             .font(.system(size: 11, weight: .medium))
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering { battery.refresh() }
+                withAnimation(.easeOut(duration: 0.15)) { isHovering = hovering }
+            }
+            .help(battery.isCharging ? "Tempo até carregar 100%" : "Tempo restante de bateria")
         }
     }
 }
@@ -76,6 +94,11 @@ struct EventRow: View {
         Calendar.current.isDateInToday(event.startDate) ? nil : "Amanhã"
     }
 
+    /// Mostra o botão de entrar a partir de 15 min antes até o fim da reunião.
+    private var isSoon: Bool {
+        !event.isAllDay && event.startDate.timeIntervalSince(now) <= 15 * 60 && event.endDate > now
+    }
+
     private var timeLabel: String {
         if event.isAllDay { return "Dia todo" }
         if event.startDate <= now { return "Agora" }
@@ -94,6 +117,19 @@ struct EventRow: View {
                 Text([dayLabel, timeLabel].compactMap { $0 }.joined(separator: " · "))
                     .font(.caption)
                     .foregroundStyle(timeLabel == "Agora" ? .green : .white.opacity(0.6))
+            }
+            if let link = event.meetingURL, isSoon {
+                Spacer(minLength: 4)
+                Button { NSWorkspace.shared.open(link) } label: {
+                    Label("Entrar", systemImage: "video.fill")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.green.opacity(0.85), in: Capsule())
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(link.absoluteString)
             }
         }
     }

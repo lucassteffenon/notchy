@@ -65,10 +65,13 @@ final class NotchSettings: ObservableObject {
     @Published private(set) var homeWidgets: [NotchModule] { didSet { save() } }
     @Published private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
     @Published private(set) var launchAtLoginNote: String?
+    /// Some com o notch quando um app ou vídeo está em tela cheia.
+    @Published var hideInFullscreen: Bool { didSet { save() } }
 
     private let defaults = UserDefaults.standard
     private let enabledKey = "enabledModules"
     private let homeKey = "homeWidgets"
+    private let fullscreenKey = "hideInFullscreen"
 
     init() {
         if let saved = defaults.stringArray(forKey: enabledKey) {
@@ -81,6 +84,7 @@ final class NotchSettings: ObservableObject {
         } else {
             homeWidgets = [.timer, .camera, .calendar]
         }
+        hideInFullscreen = defaults.object(forKey: fullscreenKey) as? Bool ?? true
     }
 
     func isEnabled(_ module: NotchModule) -> Bool { enabled.contains(module) }
@@ -141,5 +145,6 @@ final class NotchSettings: ObservableObject {
     private func save() {
         defaults.set(enabled.map(\.rawValue), forKey: enabledKey)
         defaults.set(homeWidgets.map(\.rawValue), forKey: homeKey)
+        defaults.set(hideInFullscreen, forKey: fullscreenKey)
     }
 }

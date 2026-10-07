@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Hosting view que aceita o primeiro clique mesmo com o painel inativo.
@@ -13,6 +14,7 @@ final class NotchController {
     private var monitors: [Any] = []
     private var screenObserver: NSObjectProtocol?
     private var collapseWork: DispatchWorkItem?
+    private var cancellables: Set<AnyCancellable> = []
 
     /// Tempo que o notch espera depois que o mouse sai antes de fechar.
     private let collapseDelay: TimeInterval = 0.6
@@ -21,7 +23,6 @@ final class NotchController {
         panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 3)
-        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false
@@ -29,6 +30,10 @@ final class NotchController {
         panel.hidesOnDeactivate = false
         panel.ignoresMouseEvents = true
         panel.contentView = FirstMouseHostingView(rootView: NotchRootView(model: model))
+
+        model.settings.$hideInFullscreen
+            .sink { [weak self] hide in self?.applySpaceBehavior(hideInFullscreen: hide) }
+            .store(in: &cancellables)
 
         layout()
         panel.orderFrontRegardless()
@@ -54,6 +59,14 @@ final class NotchController {
     deinit {
         monitors.forEach(NSEvent.removeMonitor)
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+    }
+
+    /// Sem `.fullScreenAuxiliary`, o macOS não mostra o painel nos espaços de tela cheia.
+    private func applySpaceBehavior(hideInFullscreen: Bool) {
+        var behavior: NSWindow.CollectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        if !hideInFullscreen { behavior.insert(.fullScreenAuxiliary) }
+        panel.collectionBehavior = behavior
+        if hideInFullscreen && model.isExpanded && !panel.isOnActiveSpace { setExpanded(false) }
     }
 
     /// Tela com notch (MacBook) ou, na falta dela, a principal.
@@ -86,6 +99,8 @@ final class NotchController {
 
     private func handleMouse(dragFromOtherApp: Bool) {
         let point = NSEvent.mouseLocation
+        // Em tela cheia o painel não está no espaço atual: não abre (nem vibra) à toa
+        guard panel.isOnActiveSpace else { return }
         if model.isExpanded {
             if shouldStayOpen(at: point) {
                 cancelCollapse()

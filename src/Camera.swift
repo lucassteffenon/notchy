@@ -9,6 +9,30 @@ final class CameraController: ObservableObject {
     @Published var status: Status = .idle
     private let queue = DispatchQueue(label: "notchy.camera")
     private var configured = false
+    private var errorObserver: NSObjectProtocol?
+
+    /// Uma única camada de preview, reaproveitada sempre que o notch abre. Criar uma nova
+    /// camada para a mesma sessão a cada abertura deixava a imagem preta da segunda vez em diante.
+    lazy var previewLayer: AVCaptureVideoPreviewLayer = {
+        let layer = AVCaptureVideoPreviewLayer(session: session)
+        layer.videoGravity = .resizeAspectFill
+        layer.transform = CATransform3DMakeScale(-1, 1, 1) // espelhado, como um espelho de verdade
+        return layer
+    }()
+
+    init() {
+        // Se a câmera der erro (ex.: outro app pegou ela), tenta religar
+        errorObserver = NotificationCenter.default.addObserver(
+            forName: AVCaptureSession.runtimeErrorNotification, object: session, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.status == .running else { return }
+            self.queue.async { self.session.startRunning() }
+        }
+    }
+
+    deinit {
+        if let errorObserver { NotificationCenter.default.removeObserver(errorObserver) }
+    }
 
     func start() {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -57,18 +81,16 @@ final class CameraController: ObservableObject {
     }
 }
 
-/// Preview espelhado, como um espelho de verdade.
+/// Mostra a camada de preview do controlador (sempre a mesma).
 final class CameraPreviewNSView: NSView {
     private let previewLayer: AVCaptureVideoPreviewLayer
 
-    init(session: AVCaptureSession) {
-        previewLayer = AVCaptureVideoPreviewLayer(session: session)
+    init(previewLayer: AVCaptureVideoPreviewLayer) {
+        self.previewLayer = previewLayer
         super.init(frame: .zero)
         wantsLayer = true
         layer = CALayer()
-        previewLayer.videoGravity = .resizeAspectFill
-        previewLayer.transform = CATransform3DMakeScale(-1, 1, 1)
-        layer?.addSublayer(previewLayer)
+        layer?.addSublayer(previewLayer) // tira a camada de onde ela estava antes
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) não suportado") }
@@ -81,16 +103,25 @@ final class CameraPreviewNSView: NSView {
         previewLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
         CATransaction.commit()
     }
+
+    /// Solta a camada, a menos que outra view já tenha pegado ela.
+    func detach() {
+        if previewLayer.superlayer === layer { previewLayer.removeFromSuperlayer() }
+    }
 }
 
 struct CameraPreview: NSViewRepresentable {
-    let session: AVCaptureSession
+    let camera: CameraController
 
     func makeNSView(context: Context) -> CameraPreviewNSView {
-        CameraPreviewNSView(session: session)
+        CameraPreviewNSView(previewLayer: camera.previewLayer)
     }
 
     func updateNSView(_ nsView: CameraPreviewNSView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: CameraPreviewNSView, coordinator: ()) {
+        nsView.detach()
+    }
 }
 
 /// Caixa da câmera com botão de ligar/desligar. Desliga sozinha ao sair da tela.
@@ -103,7 +134,7 @@ struct CameraBox: View {
             RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.07))
             switch camera.status {
             case .running:
-                CameraPreview(session: camera.session)
+                CameraPreview(camera: camera)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .overlay(alignment: .bottomTrailing) {
                         Button { camera.stop() } label: {
